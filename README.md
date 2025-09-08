@@ -1,5 +1,9 @@
 # Helix
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![CodeQL](https://github.com/Foulest/Helix/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/Foulest/Helix/actions/workflows/github-code-scanning/codeql)
+[![Downloads](https://img.shields.io/github/downloads/Foulest/Helix/total.svg)](https://github.com/Foulest/Helix/releases)
+
 **Helix** is an auto W-Tap mod for Minecraft 1.8.9.
 
 It's disguised as the [Optibye](https://modrinth.com/mod/optibye) mod to avoid detection from server anti-cheat systems.
@@ -19,9 +23,13 @@ This mod won't hold up in screenshares, but it's completely undetectable by serv
 It works by simulating button presses instead of modifying your `isSprinting` state, which is what some other W-Tap
 modules in hacked clients do, which is very detectable.
 
-## Building Helix
+## Compiling
 
 1. Clone the repository and open it in the IDE of your choice.
 2. Set up your Gradle environment and by running `setupDecompWorkspace`.
 3. Run the `reObfShadowJar` Gradle task to build the mod. The output `.jar` file will be located in the `build/libs`
    directory.
+
+## Getting Help
+
+For support or queries, please open an issue in the [Issues section](https://github.com/Foulest/Vault/issues).
