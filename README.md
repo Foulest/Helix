@@ -1,39 +1,27 @@
-# 1.8.9ForgeTemplate
+# Helix
 
-A fixed and ready to use template for minecraft forge modding on `1.8.9`
-with `shadow` plugin integrated including two useful `artifacts`. Tested flawlessly on `IntelliJ IDEA Ultimate 2022.2`
+**Helix** is an auto W-Tap mod for Minecraft 1.8.9.
 
-```js
-       java   8
-     gradle   3.1
-     shadow   2.0.4
-  minecraft   1.8.9
-forgegradle   2.1-SNAPSHOT
-```
+It's disguised as the [Optibye](https://modrinth.com/mod/optibye) mod to avoid detection from server anti-cheat systems.
+But, if you want to be extra safe, you can rename the `.jar`, `mcmod.info`, and `modid` in `@Mod` to whatever you want.
 
-## Setup
-1. Clone this repository.
-2. Import `build.gradle` as a project.
-3. Let it configure.
-4. Run `setupDecompWorkspace` in Gradle: `Tasks > forgegradle > setupDecompWorkspace`
-5. Reload gradle project.
-> *Check out [#build](#build), [#run](#run) and [#artifacts](#artifacts) for more information.*
+## Using Helix
 
-## Build
-> *Note: If the build ever finishes with an error looking like `duplicate entry`, then run `clean` in Gradle: `Tasks > build > clean`*
+1. Download the latest version of Helix from the Releases section.
+2. Insert the downloaded `.jar` file into your Minecraft `mods` folder.
+3. Launch Minecraft with the Forge profile.
+4. The W-Tap feature will be enabled by default. You can toggle it on or off by entering F5 mode (make sure you're
+   looking at your player's back) and pressing the `SEMICOLON` key. You should see your screen cycle through the next F5
+   view. This is as discreet as possible to avoid detection.
 
-&emsp;Run `build` in Gradle: `Tasks > build > build`
-> Output .jar will be located in `build/libs/`
+This mod won't hold up in screenshares, but it's completely undetectable by server-side anti-cheat systems.
 
-## Run
-&emsp;Run `genIntellijRuns` in Gradle: `Tasks > forgegradle > genIntellijRuns`
-> This will create the run configurations. <br> *Note: you will need to change the classpath module to `.main`*
+It works by simulating button presses instead of modifying your `isSprinting` state, which is what some other W-Tap
+modules in hacked clients do, which is very detectable.
 
-> You should add `CopyResources` from [#artifacts](#artifacts) as a `Task before launch` and drag it in front of build.
+## Building Helix
 
-## Artifacts
-> *Note: If the artifacts are not detected on setup, you might need to restart your IntelliJ.*
-
-&emsp;I have included two useful artifacts that I always use when developing mods:
-- `CopyMod` copies the mod from your [#build](#build) folder into your `%appdata%/.minecraft/mods`
-- `CopyResources` copies the resources folder to your `build/classes/main` so they are accessible in the development environment
+1. Clone the repository and open it in the IDE of your choice.
+2. Set up your Gradle environment and by running `setupDecompWorkspace`.
+3. Run the `reObfShadowJar` Gradle task to build the mod. The output `.jar` file will be located in the `build/libs`
+   directory.
