@@ -27,5 +27,8 @@ jobs:
       - name: 'Apply Permissions to Gradlew'
         run: chmod +x gradlew
 
-      - name: 'Build with Gradle'
-        run: ./gradlew build
+      - name: 'Run setupDecompWorkspace'
+        run: ./gradlew setupDecompWorkspace
+
+      - name: 'Run reobfShadowJar'
+        run: ./gradlew reobfShadowJar
