@@ -225,8 +225,12 @@ public class Optibye {
         tailAtNanos.set(0L);
         lastState.set(-1);
 
-        // Sync the physical key state to avoid stuck keys
-        boolean physicalDown = Keyboard.isKeyDown(forwardKey);
-        mc.addScheduledTask(() -> KeyBinding.setKeyBindState(forwardKey, physicalDown));
+        // Sets the key to false if in a GUI, otherwise to the physical state
+        if (mc.currentScreen == null) {
+            boolean physicalDown = Keyboard.isKeyDown(forwardKey);
+            mc.addScheduledTask(() -> KeyBinding.setKeyBindState(forwardKey, physicalDown));
+        } else {
+            mc.addScheduledTask(() -> KeyBinding.setKeyBindState(forwardKey, false));
+        }
     }
 }
