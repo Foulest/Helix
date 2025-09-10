@@ -179,7 +179,7 @@ public class Optibye {
         // Simulate right-click release
         BLOCK_SCHEDULER.schedule(() -> mc.addScheduledTask(() -> {
             KeyBinding.setKeyBindState(rightClickKey, false);
-        }), 50L, TimeUnit.MILLISECONDS);
+        }), 51L, TimeUnit.MILLISECONDS);
     }
 
     /**
