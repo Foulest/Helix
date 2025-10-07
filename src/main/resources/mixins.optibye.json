@@ -1,0 +1,10 @@
+{
+  "required": true,
+  "minVersion": "0.7.10",
+  "package": "tech.thatgravyboat.optibye.mixin",
+  "refmap": "optibye.refmap.json",
+  "mixins": [
+    "EntityLivingBaseMixin",
+    "MinecraftMixin"
+  ]
+}

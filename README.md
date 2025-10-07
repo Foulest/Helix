@@ -13,6 +13,8 @@ But, if you want to be extra safe, you can rename the `.jar`, `mcmod.info`, and 
 
 - **Auto W-Tap**: Automatically releases and re-presses the W key during combat to optimize knockback.
 - **Auto Block Hit**: Automatically blocks with a sword during each hit to reduce incoming damage.
+- **Lower Jump Delay**: Reduces the delay between jumps, enabling faster jumping.
+- **Lower Place Delay**: Reduces the delay when placing blocks, enabling faster building.
 
 ## Using Helix
 

@@ -17,429 +17,417 @@
  */
 package tech.thatgravyboat.optibye;
 
+import lombok.AllArgsConstructor;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
-import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.util.ChatComponentText;
 import net.minecraftforge.client.event.GuiOpenEvent;
 import net.minecraftforge.client.event.MouseEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.InputEvent;
+import net.minecraftforge.fml.common.gameevent.TickEvent;
+import org.jetbrains.annotations.NotNull;
 import org.lwjgl.input.Keyboard;
+import org.lwjgl.input.Mouse;
 
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.concurrent.ThreadLocalRandom;
 
 // Helix by Foulest
-// Version 1.0.2 (not reflected in mod ID)
+// Version 1.0.3 (not reflected in mod ID)
 
+@SuppressWarnings("MethodMayBeStatic")
 @Mod(modid = "optibye", version = "1.0.0", clientSideOnly = true)
 public class Optibye {
 
-    private static final Minecraft mc = Minecraft.getMinecraft();
-    private static final int forwardKey = mc.gameSettings.keyBindForward.getKeyCode();
-    private static final int rightClickKey = mc.gameSettings.keyBindUseItem.getKeyCode();
-
-    // Module toggles
-    private static boolean blockEnabled = true;
+    // Feature toggles
     private static boolean tapEnabled = true;
+    private static boolean blockEnabled = true;
 
-    private static final ScheduledThreadPoolExecutor BLOCK_SCHEDULER = new ScheduledThreadPoolExecutor(1, r -> {
-        Thread t = new Thread(r);
-        t.setDaemon(true);
-        return t;
-    });
+    // Maximum number of actions in each queue
+    private static final int MAX_QUEUE = 12;
 
-    private static final ScheduledThreadPoolExecutor TAP_SCHEDULER = new ScheduledThreadPoolExecutor(1, r -> {
-        Thread t = new Thread(r);
-        t.setDaemon(true);
-        return t;
-    });
-
+    // Ensures MAX_QUEUE is even
     static {
-        BLOCK_SCHEDULER.setRemoveOnCancelPolicy(true);
-        TAP_SCHEDULER.setRemoveOnCancelPolicy(true);
+        if ((MAX_QUEUE & 1) != 0) {
+            throw new IllegalStateException("MAX_QUEUE must be even");
+        }
     }
 
-    public Optibye() {
+    /**
+     * An action to press or release a key at a specific tick.
+     */
+    @AllArgsConstructor
+    private static final class Action {
+
+        final long tick;
+        final boolean down;
+    }
+
+    // Action queues
+    private static final Deque<Action> TAP_QUEUE = new ArrayDeque<>(MAX_QUEUE);
+    private static final Deque<Action> BLOCK_QUEUE = new ArrayDeque<>(MAX_QUEUE);
+
+    // Last applied logical state: -1 none, 0 RELEASE, 1 PRESS
+    private static int tapAppliedState = -1;
+    private static int blockAppliedState = -1;
+
+    // Last scheduled tick for each queue
+    private static long tapTailTick = -1;
+    private static long blockTailTick = -1;
+
+    // Last scheduled logical state: -1 none, 0 RELEASE, 1 PRESS
+    private static int tapLastEnqState = -1;
+    private static int blockLastEnqState = -1;
+
+    // Jitter probability
+    private static final double JITTER_PROB = 0.05;
+
+    // Inactivity tracking
+    private static long ticksSinceLastClick;
+    private static final int MAX_INACTIVITY_TICKS = 3;
+    private static long tapInactivityDeadline = -1;
+    private static long blockInactivityDeadline = -1;
+
+    /**
+     * Mod pre-initialization event handler.
+     *
+     * @param event - The pre-initialization event
+     */
+    @Mod.EventHandler
+    public void preInit(FMLPreInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(this);
     }
 
-    // Inactivity timeout to reset the W-tap pattern (in milliseconds)
-    private static final long INACTIVITY_MS = 250L;
-
-    // 50 ms grid (metronome) in nanoseconds
-    private static final long SLOT_NS = TimeUnit.MILLISECONDS.toNanos(51L);
-    private static final long GUARD_NS = TimeUnit.MILLISECONDS.toNanos(2L); // if <2ms to slot, use next slot
-
-    // Grid origin and tail slot index (>=0 means the last scheduled slot)
-    private static final AtomicLong gridOriginNs = new AtomicLong(0L);
-    private static final AtomicLong tailSlotIdx = new AtomicLong(-1L);
-
-    // Invalidates any queued key tasks when incremented
-    private static final AtomicLong epoch = new AtomicLong(1L);
-
-    // Atomic states for scheduling W-tap patterns
-    private static final AtomicLong tailAtNanos = new AtomicLong(0L);
-    private static final AtomicLong resetGen = new AtomicLong(0L);
-    private static final AtomicLong resetDeadlineNanos = new AtomicLong(0L);
-
-    // Last scheduled state: -1 = none, 0 = RELEASE, 1 = PRESS
-    private static final AtomicInteger lastState = new AtomicInteger(-1);
-
-    // Use a lock to make enqueue decisions atomically
-    private static final Object ENQ_LOCK = new Object();
-
-//    // Track last sprinting state for debug messages
-//    private static boolean lastSprinting;
+    /**
+     * Get the Minecraft instance.
+     *
+     * @return The Minecraft instance
+     */
+    private static Minecraft mc() {
+        return Minecraft.getMinecraft();
+    }
 
     /**
-     * Handles key input events to toggle the mod on and off.
+     * Get the forward key code.
      *
-     * @param event - The KeyInputEvent triggered by keyboard input.
+     * @return The forward key code, or Keyboard.KEY_W if not available
      */
-    @SubscribeEvent
-    public void onKeyInputEvent(InputEvent.KeyInputEvent event) {
-        // Makes sure the player is in game and not in a menu
-        if (mc.thePlayer == null || mc.currentScreen != null) {
+    private static int forwardKey() {
+        return mc().gameSettings != null ? mc().gameSettings.keyBindForward.getKeyCode() : Keyboard.KEY_W;
+    }
+
+    /**
+     * Get the block key code.
+     *
+     * @return The block key code, or -99 if not available
+     */
+    private static int blockKey() {
+        return mc().gameSettings != null ? mc().gameSettings.keyBindUseItem.getKeyCode() : -99;
+    }
+
+    /**
+     * Get the physical key state for a given key code.
+     *
+     * @param keyCode - The key code to check
+     * @return True if the key is physically down, false otherwise
+     */
+    private static boolean physicalDown(int keyCode) {
+        if (keyCode < 0) {
+            int button = keyCode + 100;
+
+            if (button >= 0 && button < Mouse.getButtonCount()) {
+                return Mouse.isButtonDown(button);
+            }
+        } else {
+            if (keyCode < Keyboard.getKeyCount()) {
+                return Keyboard.isKeyDown(keyCode);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get the current world tick, or -1 if not available.
+     *
+     * @return The current world tick, or -1 if not available
+     */
+    private static long nowTick() {
+        return mc().theWorld == null ? -1 : mc().theWorld.getTotalWorldTime();
+    }
+
+    /**
+     * Offer a pair of actions to the deque if there is capacity.
+     *
+     * @param deque - The deque to offer to
+     * @param a1 - The first action
+     * @param a2 - The second action
+     * @return True if the actions were added, false if there was insufficient capacity
+     */
+    private static boolean offerPair(@NotNull Deque<Action> deque, Action a1, Action a2) {
+        if (deque.size() + 2 <= MAX_QUEUE) {
+            deque.addLast(a1);
+            deque.addLast(a2);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Process the action queue for a given key.
+     *
+     * @param queue - The action queue
+     * @param keyCode - The key code to process
+     * @param enabled - Whether the feature is enabled
+     * @param nowTick - The current world tick
+     * @param isTap - Whether this is the tap queue (true) or block queue (false)
+     */
+    private static void processQueue(Deque<Action> queue, int keyCode, boolean enabled,
+                                     long nowTick, boolean isTap) {
+        // Clear the queue if disabled
+        if (!enabled) {
+            queue.clear();
             return;
         }
 
-        if (mc.gameSettings.thirdPersonView == 1) {
-            // Toggles the block hit feature on/off with the apostrophe key
-            if (Keyboard.isKeyDown(Keyboard.KEY_APOSTROPHE)) {
-                blockEnabled = !blockEnabled;
-                mc.gameSettings.thirdPersonView = 2;
+        while (!queue.isEmpty() && queue.peekFirst().tick <= nowTick) {
+            Action action = queue.removeFirst();
+            int current = isTap ? tapAppliedState : blockAppliedState;
+            int next = action.down ? 1 : 0;
+
+            // Ignores duplicate states
+            if (current == next) {
+                continue;
             }
 
-            // Toggles the W-Tap feature on/off with the semicolon key
-            if (Keyboard.isKeyDown(Keyboard.KEY_SEMICOLON)) {
-                tapEnabled = !tapEnabled;
-                mc.gameSettings.thirdPersonView = 2;
+            // Applies the key state
+            KeyBinding.setKeyBindState(keyCode, action.down);
+
+            // Updates the applied state
+            if (isTap) {
+                tapAppliedState = next;
+            } else {
+                blockAppliedState = next;
             }
+
+//            // Debug message
+//            if (mc.thePlayer != null) {
+//                mc.thePlayer.addChatMessage(new ChatComponentText((isTap ? "[W-Tap] " : "[Block Hit] ") +
+//                        "tick=" + nowTick + " " + (action.down ? "PRESS" : "RELEASE")
+//                ));
+//            }
         }
     }
 
     /**
-     * Handles mouse events for the Auto Block Hit module.
-     *
-     * @param event - The MouseEvent triggered by mouse input.
+     * Reset all tick states and clear queues.
      */
-    @SubscribeEvent
-    public void onSwordHit(MouseEvent event) {
-        // Makes sure the mod is enabled
-        if (!blockEnabled) {
+    private void resetTickStates() {
+        // Checks for exceptions to ignore
+        if (!tapEnabled && !blockEnabled || mc().thePlayer == null) {
             return;
         }
 
-        // Makes sure the player is in game and not in a menu
-        if (mc.thePlayer == null || mc.currentScreen != null) {
-            return;
+        // Clear scheduled actions
+        TAP_QUEUE.clear();
+        BLOCK_QUEUE.clear();
+
+        // Reset enqueue tails and logical state
+        tapTailTick = -1;
+        blockTailTick = -1;
+        tapLastEnqState = -1;
+        blockLastEnqState = -1;
+
+        // Reset applied states
+        tapAppliedState = -1;
+        blockAppliedState = -1;
+
+        // Reset inactivity
+        tapInactivityDeadline = -1;
+        blockInactivityDeadline = -1;
+
+        // Reset key states to physical state
+        if (mc().currentScreen == null) {
+            KeyBinding.setKeyBindState(forwardKey(), physicalDown(forwardKey()));
+            KeyBinding.setKeyBindState(blockKey(), physicalDown(blockKey()));
+        } else {
+            KeyBinding.setKeyBindState(forwardKey(), false);
+            KeyBinding.setKeyBindState(blockKey(), false);
         }
-
-        // Returns if the player isn't hitting an entity
-        if (mc.objectMouseOver == null || mc.objectMouseOver.entityHit == null) {
-            return;
-        }
-
-        Entity target = mc.objectMouseOver.entityHit;
-
-        // Returns if the target isn't a player
-        if (!(target instanceof EntityPlayer)) {
-            return;
-        }
-
-        // Returns if the player isn't left-clicking
-        if (!(event.button == 0 && event.buttonstate)) {
-            return;
-        }
-
-        boolean holdingSword = mc.thePlayer.getHeldItem() != null
-                && mc.thePlayer.getHeldItem().getItem().getRegistryName().contains("sword");
-
-        // Release right-click if holding a sword
-        if (holdingSword) {
-            KeyBinding.setKeyBindState(rightClickKey, false);
-        }
-
-        // Simulate right-click press
-        BLOCK_SCHEDULER.schedule(() -> mc.addScheduledTask(() -> {
-            if (holdingSword) {
-                KeyBinding.setKeyBindState(rightClickKey, true);
-
-//                // Debug message
-//                mc.thePlayer.addChatMessage(new ChatComponentText("§e[Helix] §aBlock hitting..."));
-            }
-        }), 0L, TimeUnit.MILLISECONDS);
-
-        // Simulate right-click release
-        BLOCK_SCHEDULER.schedule(() -> mc.addScheduledTask(() -> {
-            KeyBinding.setKeyBindState(rightClickKey, false);
-        }), 51L, TimeUnit.MILLISECONDS);
     }
 
     /**
-     * Handles GUI open events to reset states when entering a GUI.
+     * Client tick event handler.
      *
-     * @param event - The GuiOpenEvent triggered when a GUI is opened.
+     * @param event - The client tick event
+     */
+    @SubscribeEvent
+    public void onClientTick(TickEvent.ClientTickEvent event) {
+        // Checks for exceptions to ignore
+        if (!tapEnabled && !blockEnabled
+                || event.phase != TickEvent.Phase.END
+                || mc().thePlayer == null) {
+            return;
+        }
+
+        // Inactivity reset
+        if (ticksSinceLastClick >= MAX_INACTIVITY_TICKS
+                && (tapInactivityDeadline != -1 || blockInactivityDeadline != -1)) {
+            resetTickStates();
+        } else {
+            ticksSinceLastClick++;
+        }
+
+        long now = nowTick();
+
+        // Ignores if world tick is not available
+        if (now < 0) {
+            mc().thePlayer.addChatMessage(new ChatComponentText("Ignoring onClientTick"));
+            return;
+        }
+
+        // Process queues
+        processQueue(TAP_QUEUE, forwardKey(), tapEnabled, now, true);
+        processQueue(BLOCK_QUEUE, blockKey(), blockEnabled, now, false);
+    }
+
+    /**
+     * GUI open event handler to reset states.
+     *
+     * @param event - The GUI open event
      */
     @SubscribeEvent
     public void onOpenGUI(GuiOpenEvent event) {
-        // Reset states when a player enters a GUI
-        if (mc != null && mc.thePlayer != null) {
+        // Checks for exceptions to ignore
+        if (!tapEnabled && !blockEnabled) {
+            return;
+        }
+
+        // Resets states when opening a GUI
+        if (mc() != null && mc().thePlayer != null) {
             resetTickStates();
         }
     }
 
     /**
-     * Handles mouse events for the Auto W-Tap module.
+     * Key input event handler to toggle features.
      *
-     * @param event - The MouseEvent triggered by mouse input.
+     * @param event - The key input event
      */
     @SubscribeEvent
-    public void onSprintHit(MouseEvent event) {
-        // Makes sure the mod is enabled
-        if (!tapEnabled) {
+    public void onKeyInputEvent(InputEvent.KeyInputEvent event) {
+        // Checks for exceptions to ignore
+        if (mc().thePlayer == null || mc().currentScreen != null) {
             return;
         }
 
-        // Makes sure the player is in game and not in a menu
-        if (mc.thePlayer == null || mc.currentScreen != null) {
-            return;
-        }
+        // Toggles features when in third-person view
+        if (mc().gameSettings.thirdPersonView == 1) {
+            if (physicalDown(Keyboard.KEY_SEMICOLON)) {
+                tapEnabled = !tapEnabled;
+                mc().gameSettings.thirdPersonView = 2;
+            }
 
-        // Returns if the player isn't sprinting
-        if (!mc.thePlayer.isSprinting()) {
-            return;
-        }
-
-        // Returns if the player isn't hitting an entity
-        if (mc.objectMouseOver == null || mc.objectMouseOver.entityHit == null) {
-            return;
-        }
-
-        Entity target = mc.objectMouseOver.entityHit;
-
-        // Returns if the target isn't a player
-        if (!(target instanceof EntityPlayer)) {
-            return;
-        }
-
-        // Returns if the player isn't left-clicking
-        if (!(event.button == 0 && event.buttonstate)) {
-            return;
-        }
-
-        // Enqueue the W-tap pattern
-        enqueueWTapPattern();
-    }
-
-    /**
-     * Enqueues the W-tap pattern based on the current time and state.
-     */
-    private static void enqueueWTapPattern() {
-        long now = System.nanoTime();
-
-        // Update the inactivity deadline
-        long deadline = now + TimeUnit.MILLISECONDS.toNanos(INACTIVITY_MS);
-        resetDeadlineNanos.set(deadline);
-
-        // Increment the reset generation to invalidate old watchdogs
-        long myGen = resetGen.incrementAndGet();
-
-        long[] timesToSchedule;
-        boolean[] statesToSchedule; // false = RELEASE, true = PRESS
-
-        synchronized (ENQ_LOCK) {
-            long origin = ensureGridOrigin(now);
-            boolean startingBurst = (tailAtNanos.get() == 0L && lastState.get() == -1);
-            long tailSlot = tailSlotIdx.get(); // -1 means no slots used yet
-
-            if (startingBurst) {
-                // First enqueue of a burst:
-                // RELEASE at next safe grid slot, PRESS at the following slot (exact +50 ms).
-                long releaseSlot = nextSafeSlot(now, origin, slotIndexAt(now, origin));
-                long pressSlot = releaseSlot + 1;
-
-                long releaseAt = slotToTime(releaseSlot, origin);
-                long pressAt = slotToTime(pressSlot, origin);
-
-                timesToSchedule = new long[]{releaseAt, pressAt};
-                statesToSchedule = new boolean[]{false, true};
-
-                tailSlotIdx.set(pressSlot);
-                tailAtNanos.set(pressAt);
-                lastState.set(1);
-            } else {
-                // We’re mid-burst: append on the 50ms grid, not "now".
-                long baseSlot = Math.max(tailSlot, slotIndexAt(now, origin));
-
-                if (lastState.get() == 0) {
-                    // last was RELEASE -> only PRESS next
-                    long pressSlot = nextSafeSlot(now, origin, baseSlot + 1);
-                    long pressAt = slotToTime(pressSlot, origin);
-
-                    timesToSchedule = new long[]{pressAt};
-                    statesToSchedule = new boolean[]{true};
-
-                    tailSlotIdx.set(pressSlot);
-                    tailAtNanos.set(pressAt);
-                    lastState.set(1);
-                } else {
-                    // last was PRESS -> RELEASE then PRESS on successive slots
-                    long releaseSlot = nextSafeSlot(now, origin, baseSlot + 1);
-                    long pressSlot = releaseSlot + 1;
-
-                    long releaseAt = slotToTime(releaseSlot, origin);
-                    long pressAt = slotToTime(pressSlot, origin);
-
-                    timesToSchedule = new long[]{releaseAt, pressAt};
-                    statesToSchedule = new boolean[]{false, true};
-
-                    tailSlotIdx.set(pressSlot);
-                    tailAtNanos.set(pressAt);
-                    lastState.set(1);
-                }
+            if (physicalDown(Keyboard.KEY_APOSTROPHE)) {
+                blockEnabled = !blockEnabled;
+                mc().gameSettings.thirdPersonView = 2;
             }
         }
-
-        // Schedule outside the lock
-        for (int i = 0; i < timesToSchedule.length; i++) {
-            long when = timesToSchedule[i];
-            boolean down = statesToSchedule[i];
-            long delay = Math.max(0L, when - System.nanoTime());
-            long myEpoch = epoch.get();
-
-            TAP_SCHEDULER.schedule(() -> mc.addScheduledTask(() -> {
-                // If we were reset after scheduling, drop this task.
-                if (myEpoch != epoch.get()) {
-                    return;
-                }
-
-                KeyBinding.setKeyBindState(forwardKey, down);
-//                boolean sprinting = mc.thePlayer.isSprinting();
-//
-//                // Debug message
-//                mc.thePlayer.addChatMessage(new ChatComponentText("§e[Helix] §f["
-//                        + (delay / 1000000) + "ms] " + (down ? "§aPRESS" : "§cRELEASE")
-//                        + " §7(" + sprinting + ") "
-//                        + (lastSprinting == sprinting ? "§c✘" : "§a✔")
-//                ));
-//
-//                lastSprinting = sprinting;
-            }), delay, TimeUnit.NANOSECONDS);
-        }
-
-        // Inactivity watchdog - resets the burst so the next hit restarts with the single 0ms RELEASE
-        TAP_SCHEDULER.schedule(() -> {
-            if (resetGen.get() == myGen) {
-                long cur = System.nanoTime();
-
-                // If we are past the deadline, reset the burst state
-                if (cur >= resetDeadlineNanos.get()) {
-                    resetTickStates();
-                }
-            }
-        }, INACTIVITY_MS, TimeUnit.MILLISECONDS);
     }
 
     /**
-     * Resets the tick states related to the W-tap pattern.
+     * Global mouse event handler for on-click events.
+     *
+     * @param event - The mouse event
      */
-    public static void resetTickStates() {
-        // Makes sure the player is in game
-        if (mc.thePlayer == null) {
+    @SubscribeEvent
+    public void onMouseEvent(MouseEvent event) {
+        // Checks for exceptions to ignore
+        if (mc().thePlayer == null
+                || mc().currentScreen != null
+                || !(event.button == 0 && event.buttonstate)
+                || mc().objectMouseOver == null
+                || !(mc().objectMouseOver.entityHit instanceof EntityPlayer)) {
             return;
         }
 
-        // Makes sure there's even a need to reset the W-tap pattern
-        if (tailAtNanos.get() == 0L && lastState.get() == -1) {
+        ticksSinceLastClick = 0;
+        long tick = nowTick();
+
+        // Ignores if world tick is not available
+        if (tick < 0) {
+            mc().thePlayer.addChatMessage(new ChatComponentText("Ignoring onMouseEvent"));
             return;
         }
 
-//        // Debug message
-//        mc.thePlayer.addChatMessage(new ChatComponentText("§e[Helix] §7§oResetting W-tap pattern..."));
+        EntityPlayer player = mc().thePlayer;
 
-        // Invalidate all previously scheduled key tasks
-        epoch.incrementAndGet();
+        // Handles W-Tap
+        if (tapEnabled && player.isSprinting()) {
+            handleWTap(tick);
+        }
 
-        // Reset the tail and last state
-        tailAtNanos.set(0L);
-        lastState.set(-1);
-
-        // Reset the slot index and grid origin
-        tailSlotIdx.set(-1L);
-        gridOriginNs.set(0L);
-
-        // Sets the key to false if in a GUI, otherwise to the physical state
-        if (mc.currentScreen == null) {
-            boolean physicalDown = Keyboard.isKeyDown(forwardKey);
-            mc.addScheduledTask(() -> KeyBinding.setKeyBindState(forwardKey, physicalDown));
-        } else {
-            mc.addScheduledTask(() -> KeyBinding.setKeyBindState(forwardKey, false));
+        // Handles Block Hit
+        if (blockEnabled
+                && player.getCurrentEquippedItem() != null
+                && player.getCurrentEquippedItem().getUnlocalizedName().contains("sword")) {
+            handleBlockHit(tick);
         }
     }
 
     /**
-     * Ensures that the grid origin is set, aligning it to the nearest SLOT_NS interval.
+     * Handles W-Tap logic.
      *
-     * @param now - The current time in nanoseconds.
-     * @return The grid origin time in nanoseconds.
+     * @param tick - The current world tick
      */
-    private static long ensureGridOrigin(long now) {
-        long cur = gridOriginNs.get();
+    private static void handleWTap(long tick) {
+        long tail = tapTailTick;
+        boolean starting = tail < 0 && tapLastEnqState == -1;
+        long base = starting ? tick : Math.max(tail, tick);
 
-        if (cur != 0L) {
-            return cur;
+        // Adds jitter to avoid robotic timing
+        if (!starting && ThreadLocalRandom.current().nextDouble() < JITTER_PROB) {
+            base += 1;
         }
 
-        long origin = now - (now % SLOT_NS); // align origin to the 50ms grid
-        gridOriginNs.compareAndSet(0L, origin);
-        return gridOriginNs.get();
-    }
+        // Enqueue pattern: RELEASE, then PRESS (base+1, base+2)
+        long t1 = base + 1;
+        long t2 = base + 2;
+        boolean enq = offerPair(TAP_QUEUE, new Action(t1, false), new Action(t2, true));
 
-    /**
-     * Calculates the slot index for a given time based on the origin.
-     *
-     * @param now - Current time in nanoseconds.
-     * @param origin - Origin time in nanoseconds.
-     * @return The slot index.
-     */
-    private static long slotIndexAt(long now, long origin) {
-        return (now - origin) / SLOT_NS;
-    }
-
-    /**
-     * Converts a slot index back to a time in nanoseconds based on the origin.
-     *
-     * @param slotIdx - The slot index.
-     * @param origin - The origin time in nanoseconds.
-     * @return The corresponding time in nanoseconds.
-     */
-    private static long slotToTime(long slotIdx, long origin) {
-        return origin + slotIdx * SLOT_NS;
-    }
-
-    /**
-     * Finds the next safe slot index that is at least `atLeastSlot` and not too close to `now`.
-     *
-     * @param now - Current time in nanoseconds.
-     * @param origin - Origin time in nanoseconds.
-     * @param atLeastSlot - Minimum slot index to consider.
-     * @return The next safe slot index.
-     */
-    private static long nextSafeSlot(long now, long origin, long atLeastSlot) {
-        long slot = Math.max(slotIndexAt(now, origin), atLeastSlot);
-        long t = slotToTime(slot, origin);
-
-        // If we are too close to the slot time, move to the next slot
-        if (t - now <= GUARD_NS) {
-            slot += 1;
+        // Updates state if enqueued
+        if (enq) {
+            tapTailTick = base + 2;
+            tapLastEnqState = 1;
+            tapInactivityDeadline = tapTailTick + 3;
         }
-        return slot;
+    }
+
+    /**
+     * Handles Block Hit logic.
+     *
+     * @param tick - The current world tick
+     */
+    private static void handleBlockHit(long tick) {
+        long tail = blockTailTick;
+        boolean starting = tail < 0 && blockLastEnqState == -1;
+        long base = starting ? tick : Math.max(tail, tick);
+
+        // Enqueue pattern: PRESS, then RELEASE (base+1, base+2)
+        long t1 = base + 1;
+        long t2 = base + 2;
+        boolean enq = offerPair(BLOCK_QUEUE, new Action(t1, true), new Action(t2, false));
+
+        // Updates state if enqueued
+        if (enq) {
+            blockTailTick = base + 2;
+            blockLastEnqState = 1;
+            blockInactivityDeadline = blockTailTick + 3;
+        }
     }
 }

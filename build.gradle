@@ -3,10 +3,17 @@ buildscript {
         maven {
             url 'https://maven.minecraftforge.net'
         }
+
+        maven {
+            url 'https://repo.spongepowered.org/maven'
+        }
+
+        mavenCentral()
     }
 
     dependencies {
         classpath 'net.minecraftforge.gradle:ForgeGradle:2.1-SNAPSHOT'
+        classpath 'org.spongepowered:mixingradle:0.6-SNAPSHOT'
     }
 }
 
@@ -16,6 +23,7 @@ plugins {
 }
 
 apply plugin: 'net.minecraftforge.gradle.forge'
+apply plugin: 'org.spongepowered.mixin'
 
 group = 'net.foulest'
 description = 'Helix'
@@ -39,9 +47,38 @@ configurations {
 }
 
 repositories {
+    maven {
+        url 'https://repo.spongepowered.org/maven'
+    }
 }
 
 dependencies {
+    compile 'org.spongepowered:mixin:0.7.11-SNAPSHOT'
+
+    // JetBrains Annotations - for code inspection and documentation
+    // https://mvnrepository.com/artifact/org.jetbrains/annotations
+    compileOnly group: 'org.jetbrains', name: 'annotations', version: '26.0.2'
+
+    // Lombok - for reducing boilerplate code
+    // https://projectlombok.org
+    compileOnly group: 'org.projectlombok', name: 'lombok', version: '1.18.38'
+}
+
+mixin {
+    defaultObfuscationEnv searge
+    add sourceSets.main, 'optibye.refmap.json'
+}
+
+jar {
+    manifest {
+        attributes(
+                'TweakClass': 'org.spongepowered.asm.launch.MixinTweaker',
+                'MixinConfigs': 'mixins.optibye.json',
+                'FMLCorePluginContainsFMLMod': 'true',
+                'ForceLoadAsMod': 'true',
+                'TweakOrder': '0' // optional, but nice to be explicit
+        )
+    }
 }
 
 processResources {
@@ -61,12 +98,18 @@ processResources {
 }
 
 shadowJar {
-    dependencies {
-    }
-
-    configurations = [project.configurations.shade]
-    duplicatesStrategy DuplicatesStrategy.EXCLUDE
     classifier ''
+    duplicatesStrategy DuplicatesStrategy.EXCLUDE
+
+    manifest {
+        attributes(
+                'TweakClass': 'org.spongepowered.asm.launch.MixinTweaker',
+                'MixinConfigs': 'mixins.optibye.json',
+                'FMLCorePluginContainsFMLMod': 'true',
+                'ForceLoadAsMod': 'true',
+                'TweakOrder': '0'
+        )
+    }
 }
 
 reobf {
